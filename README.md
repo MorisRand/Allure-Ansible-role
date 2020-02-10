@@ -11,3 +11,6 @@ This roles does a number of things to deploy such service:
 - Install Docker services for Allure. 
 The following container is used: https://github.com/fescobar/allure-docker-service
 - Sets up a systemd daemon for it.
+
+> __Tested with Ubuntu 18.04__. Pathes to systemd conf folder and to location of
+docker-compose maybe different in other distros.
