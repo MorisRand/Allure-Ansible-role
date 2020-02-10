@@ -1,0 +1,200 @@
+# The setup for enabling chrooted directories over SFTP connection
+# https://stackoverflow.com/questions/23448900/public-key-authorization-on-sftp-chroot-directory
+- name: Create group for SFTP users
+  group:
+      name: "{{ sftp_group }}"
+      state: present
+  tags: [users, allure, sftp]
+  register: sftp_group_creation
+
+- name: Create folder for hosting sftpusers chrooted homes
+  file:
+     dest: "/{{ sftp_group }}"
+     owner: root
+     group: root
+     state: directory
+     mode: 0755
+  tags: [users, allure, sftp]
+  when: sftp_group_creation.failed == False
+  register: sftp_homes
+
+- name: Create allure user
+  user:
+      name: allure
+      home: "/{{ sftp_group }}/allure"
+      groups: "{{ sshers_group }},{{ sftp_group }}"
+      shell: /usr/sbin/nologin
+      state: present
+      password: "$6$fpk6.WxE/$zzWjODEbGlv8IDeYlI78qmLYqotQ9MTclzHPeIRc9Z03Q/kZQCjCnAU51uHmJj2JFmMx8rokbzmiCFy7vyjci1"
+      generate_ssh_key: yes
+      ssh_key_bits: 4096
+      ssh_key_file: .ssh/id_rsa_allure
+  tags: [users, allure, sftp]
+  when: sftp_homes.failed == False
+  register: allure_user_created
+
+- name: Transfer SSH keys for allure user from the remote machine
+  fetch:
+      flat: yes
+      src: "/{{ sftp_group }}/allure/.ssh/{{ item }}"
+      dest: "/tmp/{{ item }}"
+  loop:
+      - id_rsa_allure
+      - id_rsa_allure.pub
+  when: allure_user_created.failed == False
+  tags: [users, allure, sftp]
+
+- name: Set SSH public key on remote machine
+  authorized_key:
+      user: allure
+      key: "{{ allure_user_created.ssh_public_key }}"
+  tags: [users, allure, sftp]
+
+- debug:
+    msg: SSH keys for allure user on remote machine have been transfered to your /tmp
+  when: allure_user_created.failed == False
+
+
+# Preparing chroot jail
+
+- name: Change owner over /{{ sftp_group }}/allure to root recursively
+  file:
+      dest: "/{{ sftp_group }}/allure"
+      state: directory
+      owner: root
+      group: root
+  tags: [allure, sftp, chroot]
+  when: allure_user_created.failed == False
+
+- name: Force owner of /{{ sftp_group }}/allure/.ssh to allure
+  file:
+      dest: "/{{ sftp_group }}/allure/.ssh"
+      state: directory
+      owner: allure
+      group: allure
+      mode: 0700
+  tags: [allure, sftp, chroot]
+  when: allure_user_created.failed == False
+
+- name: Force owner of public key to allure and set correct permissions
+  file:
+      dest: "/{{ sftp_group }}/allure/.ssh/authorized_keys"
+      state: file
+      owner: allure
+      group: allure
+      mode: 0600
+  tags: [allure, sftp, chroot]
+  when: allure_user_created.failed == False
+
+- name: Create folders owned by root to chroot in
+  file:
+     dest: "{{ item }}"
+     owner: root
+     group: root
+     state: directory
+     mode: 0755
+  loop:
+      - "/{{ sftp_group }}/allure/sftp"
+      - "/{{ sftp_group }}/allure/sftp/home"
+  tags: [users, allure, sftp]
+  when: allure_user_created.failed == False
+  register: chrooted_folders
+
+- name: Create folder where allure will transfer test results
+  file:
+     dest: "{{ item }}"
+     owner: allure
+     group: allure
+     state: directory
+     mode: 0755
+  loop:
+      - "/{{ sftp_group }}/allure/sftp/home/allure"
+      - "/{{ sftp_group }}/allure/sftp/home/allure/logs"
+  tags: [users, allure, sftp]
+  when: allure_user_created.failed == False
+
+
+# Change SSH settings to make users from group {{ sftp_group }} to go to
+# chrooted jail
+
+- name: Comment out Subsystem in SSH config
+  lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: '(^Subsystem .*)'
+      line: '# \1'
+      backrefs: yes
+      state: present
+  tags: [allure, sftp, comment-sftp]
+  register: ssh_config_comment
+
+- name: Insert/Update Subsystem to internal-sftp "Match Group" configuration block in /etc/ssh/sshd_config
+  blockinfile:
+    path: /etc/ssh/sshd_config
+    block: |
+        Subsystem    sftp    internal-sftp
+        Match Group {{ sftp_group }}
+            ChrootDirectory /{{ sftp_group }}/%u/sftp
+            AuthorizedKeysFile /{{ sftp_group }}/%u/.ssh/authorized_keys
+            ForceCommand internal-sftp
+            AllowTcpForwarding no
+            X11Forwarding no
+  tags: [allure, sftp]
+  when: ssh_config_comment.failed == False
+  register: ssh_config_add
+
+- name: Restart sshd to take effect of things we added
+  service:
+    name: sshd
+    state: restarted
+  when: (ssh_config_comment.failed == False) and (ssh_config_add.failed == False)
+  tags: [allure, sftp]
+
+# Time to roll in some Docker services
+# We will use excellent Docker containter by
+# https://github.com/fescobar/allure-docker-service
+
+- name: Check if docker-compose is installed and install if not
+  apt:
+      name: docker-compose
+      state: present
+  when: "'docker-compose not in ansible_facts.packages'"
+  tags: [allure, allure_docker]
+
+- name: Set variable for path where Allure Docker should expect the logs
+  set_fact:
+      allure_data_path: "/{{ sftp_group }}/allure/sftp/home/allure/logs"
+  tags: [allure, allure_docker]
+
+- name: Create a home folder for Allure Docker service
+  file:
+      dest: "{{ allure_docker_home }}"
+      state: directory
+      owner: root
+      group: root
+      mode: 0755
+  tags: [allure, allure_docker]
+
+- name: Roll a docker-compose.yml there from template
+  template:
+      src: "docker-compose.yml.j2"
+      dest: "{{ allure_docker_home }}/docker-compose.yml"
+      owner: root
+      group: root
+      mode: 0755
+  tags: [allure, allure_docker]
+
+- name: Roll a systemd unit for Allure service
+  template:
+      src: "allure.service.j2"
+      dest: "/etc/systemd/system/allure.service"
+      owner: root
+      group: root
+      mode: 0755
+  tags: [allure, allure_docker]
+
+- name: Start Allure service through systemd
+  service:
+      name: allure
+      state: started
+      enabled: yes
+  tags: [allure, allure_docker]
