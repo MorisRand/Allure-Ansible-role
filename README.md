@@ -2,7 +2,7 @@
 [Allure](http://allure.qatools.ru/) is a service for representing results of
 test written in different languages and testing frameworks in pleasant web-based view.
 
-This roles does a number of things to deploy such service:
+This roles does a number of things to deploy such a service:
 - Sets up a directory where results of tests would be transferred via SFTP.
   The destination directory is **chrooted**, so running the role would make
   neccessary changes to your `/etc/ssh/sshd_config`.
