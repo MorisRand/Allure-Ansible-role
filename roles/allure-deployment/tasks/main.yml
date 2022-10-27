@@ -25,7 +25,6 @@
       groups: "{{ sshers_group }},{{ sftp_group }}"
       shell: /usr/sbin/nologin
       state: present
-      password: "$6$fpk6.WxE/$zzWjODEbGlv8IDeYlI78qmLYqotQ9MTclzHPeIRc9Z03Q/kZQCjCnAU51uHmJj2JFmMx8rokbzmiCFy7vyjci1"
       generate_ssh_key: yes
       ssh_key_bits: 4096
       ssh_key_file: .ssh/id_rsa_allure
